@@ -82,34 +82,129 @@ impl Ollama {
 
         let mut stream = response.bytes_stream();
         let mut full = String::new();
+        // Buffered bytes that may span HTTP chunk boundaries. Records are only
+        // parsed once a full `\n`-terminated line is available, so a chunk
+        // boundary can never split a UTF-8 character or a JSON record.
+        let mut buffer: Vec<u8> = Vec::new();
+
+        let mut handle_line = |line: &str| -> Result<bool> {
+            let line = line.trim();
+            if line.is_empty() {
+                return Ok(false);
+            }
+
+            let parsed: ChatChunk =
+                serde_json::from_str(line).with_context(|| format!("bad chunk: {line}"))?;
+
+            if let Some(err) = parsed.error {
+                return Err(anyhow!(err));
+            }
+            if let Some(message) = parsed.message
+                && !message.content.is_empty()
+            {
+                full.push_str(&message.content);
+                on_token(&message.content);
+            }
+            Ok(parsed.done)
+        };
 
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.context("error reading stream")?;
-            let text = String::from_utf8_lossy(&chunk);
+            buffer.extend_from_slice(&chunk);
 
-            for line in text.lines() {
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
-                }
-                let parsed: ChatChunk =
-                    serde_json::from_str(line).with_context(|| format!("bad chunk: {line}"))?;
-
-                if let Some(err) = parsed.error {
-                    return Err(anyhow!(err));
-                }
-                if let Some(message) = parsed.message
-                    && !message.content.is_empty()
-                {
-                    full.push_str(&message.content);
-                    on_token(&message.content);
-                }
-                if parsed.done {
+            for line in take_complete_lines(&mut buffer) {
+                let text = std::str::from_utf8(&line).context("stream contained invalid UTF-8")?;
+                if handle_line(text)? {
                     return Ok(full);
                 }
             }
         }
 
+        // Flush a trailing record that arrived without a final newline.
+        for line in take_remaining(&mut buffer) {
+            let text = std::str::from_utf8(&line).context("stream contained invalid UTF-8")?;
+            handle_line(text)?;
+        }
+
         Ok(full)
+    }
+}
+
+/// Drain every `\n`-terminated record from `buffer`, leaving any partial
+/// trailing record in place. Returns complete records in order.
+///
+/// Records are only returned once a full newline is present, so a chunk
+/// boundary can never split a JSON record or a multi-byte UTF-8 character.
+fn take_complete_lines(buffer: &mut Vec<u8>) -> Vec<Vec<u8>> {
+    let mut lines = Vec::new();
+    while let Some(pos) = buffer.iter().position(|&b| b == b'\n') {
+        lines.push(buffer.drain(..=pos).collect());
+    }
+    lines
+}
+
+/// Drain any remaining bytes in `buffer` as a final record, clearing the
+/// buffer. Used only after the stream has ended to capture a trailing record
+/// that arrived without a newline.
+fn take_remaining(buffer: &mut Vec<u8>) -> Vec<Vec<u8>> {
+    if buffer.is_empty() {
+        return Vec::new();
+    }
+    vec![std::mem::take(buffer)]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The buffer splitter must not emit a partial JSON record or a partial
+    /// multi-byte UTF-8 character: records are only returned once a full
+    /// newline is present.
+    #[test]
+    fn buffers_records_across_chunk_boundaries() {
+        // One JSON record with a multi-byte UTF-8 char (U+270B "✋") inside.
+        // The UTF-8 bytes are spliced in so the byte literal stays ASCII.
+        let head = br#"{"message":{"role":"assistant","content":"hi "#;
+        let waved_hand = "\u{270B}";
+        let tail = br#""},"done":false}"#;
+
+        let mut record = head.to_vec();
+        record.extend_from_slice(waved_hand.as_bytes());
+        record.extend_from_slice(tail);
+        let mut with_nl = record.clone();
+        with_nl.push(b'\n');
+
+        // Feed the record in pieces that split the UTF-8 char and the newline.
+        let split = 7; // inside "content" value bytes, before the multi-byte char start
+        let split2 = with_nl.len() - 1; // newline is the only byte in the final chunk
+
+        let mut buffer = Vec::new();
+        buffer.extend_from_slice(&with_nl[..split]);
+        assert!(
+            take_complete_lines(&mut buffer).is_empty(),
+            "no complete line yet"
+        );
+
+        buffer.extend_from_slice(&with_nl[split..split2]);
+        assert!(
+            take_complete_lines(&mut buffer).is_empty(),
+            "still no newline"
+        );
+
+        buffer.push(with_nl[split2]); // now the newline arrives
+        let lines = take_complete_lines(&mut buffer);
+        assert_eq!(lines.len(), 1, "exactly one complete record");
+        assert_eq!(&lines[0], &with_nl);
+    }
+
+    /// A trailing record without a final newline is still surfaced once the
+    /// stream ends.
+    #[test]
+    fn flushes_trailing_record_without_newline() {
+        let mut buffer = "partial".as_bytes().to_vec();
+        assert!(take_complete_lines(&mut buffer).is_empty());
+        let rest = take_remaining(&mut buffer);
+        assert_eq!(rest, vec![b"partial".to_vec()]);
+        assert!(buffer.is_empty());
     }
 }
