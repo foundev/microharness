@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: ['master', 'ci/**']
+  pull_request: {}
+
+jobs:
+  build-ubuntu:
+    name: Build, lint, and test (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        id: toolchain
+        uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-microharness-cargo-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-microharness-cargo-${{ steps.toolchain.outputs.cachekey }}-
+            ${{ runner.os }}-microharness-cargo-
+
+      - name: Check Rust formatting
+        run: cargo fmt --check
+
+      - name: Run Clippy lints
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Build microharness
+        run: cargo build
+
+      - name: Run tests
+        run: cargo test
