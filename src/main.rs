@@ -1,16 +1,131 @@
-//! microharness — a minimal agentic harness for local Ollama serve.
+//! microharness — a minimal agentic TUI for a local Ollama server.
 //!
-//! Reads prompts from stdin, streams replies from the model, and keeps a
-//! multi-turn conversation going until EOF (Ctrl-D).
+//! A chat interface with a status line showing the current model and think
+//! level. Type a prompt and press Enter to send; the reply streams into the
+//! transcript. `T` cycles the think level (auto → on → off → low → medium →
+//! high → max), Ctrl-C quits.
 
 mod ollama;
 
 use anyhow::Result;
-use ollama::Ollama;
-use std::io::{BufRead, Write};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use futures_util::StreamExt;
+use ollama::{Ollama, Think};
+use ratatui::{
+    DefaultTerminal, Frame,
+    layout::{Constraint, Direction, Layout},
+    style::{Color, Modifier, Style},
+    text::{Line, Span, Text},
+    widgets::{Block, Borders, Paragraph, Wrap},
+};
+use tokio::sync::mpsc;
 
 const DEFAULT_BASE_URL: &str = "http://localhost:11434";
 const DEFAULT_MODEL: &str = "llama3.2";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Role {
+    User,
+    Assistant,
+}
+
+impl Role {
+    fn label(self) -> &'static str {
+        match self {
+            Role::User => "you",
+            Role::Assistant => "assistant",
+        }
+    }
+}
+
+#[derive(Debug)]
+enum Event {
+    Chunk(String),
+    Reply(Result<String>),
+}
+
+struct App {
+    ollama: Ollama,
+    base_url: String,
+    model: String,
+    think: Think,
+    input: String,
+    transcript: Vec<(Role, String)>,
+    /// Partial reply currently streaming ("" while streaming, None when idle).
+    streaming: Option<String>,
+    error: Option<String>,
+}
+
+impl App {
+    fn new(ollama: Ollama, base_url: String, model: String) -> Self {
+        Self {
+            ollama,
+            base_url,
+            model,
+            think: Think::Auto,
+            input: String::new(),
+            transcript: Vec::new(),
+            streaming: None,
+            error: None,
+        }
+    }
+
+    fn status_spans(&self) -> Vec<Span<'static>> {
+        let model = self.model.clone();
+        let base_url = self.base_url.clone();
+        let think = self.think.label().to_string();
+        vec![
+            Span::styled(
+                " microharness ",
+                Style::new().fg(Color::White).bg(Color::DarkGray),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                model,
+                Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" @ "),
+            Span::styled(base_url, Style::new().fg(Color::DarkGray)),
+            Span::raw("  ·  "),
+            Span::styled("think", Style::new().fg(Color::DarkGray)),
+            Span::raw(" "),
+            Span::styled(
+                think,
+                Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  [T] cycle think  [Enter] send  [Ctrl-C] quit"),
+        ]
+    }
+
+    fn render_transcript(&self) -> Text<'_> {
+        let mut text = Text::default();
+        for (role, content) in &self.transcript {
+            text.push_line(Line::styled(
+                role.label().to_string(),
+                Style::new().fg(if *role == Role::User {
+                    Color::Green
+                } else {
+                    Color::Blue
+                }),
+            ));
+            for line in content.lines() {
+                text.push_line(Line::raw(line.to_string()));
+            }
+            text.push_line(Line::raw(""));
+        }
+        if let Some(partial) = &self.streaming {
+            text.push_line(Line::styled("assistant", Style::new().fg(Color::Blue)));
+            for line in partial.lines() {
+                text.push_line(Line::raw(line.to_string()));
+            }
+            text.push_line(Line::raw(""));
+        }
+        if let Some(err) = &self.error {
+            text.push_line(Line::styled(err.clone(), Style::new().fg(Color::Red)));
+        }
+        text
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -33,30 +148,127 @@ async fn main() -> Result<()> {
         i += 1;
     }
 
-    let client = Ollama::new(&base_url, &model);
-    let stdin = std::io::stdin();
-    let mut history: Vec<(String, String)> = Vec::new();
+    let ollama = Ollama::new(&base_url, &model);
+    let app = App::new(ollama, base_url, model);
+    let mut terminal = ratatui::init();
+    let res = run(&mut terminal, app).await;
+    ratatui::restore();
+    res
+}
 
-    eprintln!("microharness: talking to {model} at {base_url}");
-    eprintln!("type a prompt (Ctrl-D to exit)");
+async fn run(terminal: &mut DefaultTerminal, mut app: App) -> Result<()> {
+    let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
+    let mut events = crossterm::event::EventStream::new();
 
-    for line in stdin.lock().lines() {
-        let line = line?;
-        let prompt = line.trim();
-        if prompt.is_empty() {
-            continue;
+    loop {
+        terminal.draw(|f| ui(f, &app))?;
+        tokio::select! {
+            maybe = events.next() => match maybe {
+                Some(Ok(crossterm::event::Event::Key(key))) => {
+                    if handle_key(&tx, &mut app, key).await? {
+                        break;
+                    }
+                }
+                Some(Err(e)) => return Err(e.into()),
+                _ => {}
+            },
+            Some(event) = rx.recv() => match event {
+                Event::Chunk(chunk) => {
+                    if let Some(s) = app.streaming.as_mut() {
+                        s.push_str(&chunk);
+                    }
+                }
+                Event::Reply(Ok(full)) => {
+                    app.streaming = None;
+                    app.transcript.push((Role::Assistant, full));
+                }
+                Event::Reply(Err(e)) => {
+                    app.streaming = None;
+                    app.error = Some(format!("error: {e:#}"));
+                }
+            },
         }
-
-        history.push(("user".to_string(), prompt.to_string()));
-        let reply = client
-            .chat(&history, |delta| {
-                print!("{delta}");
-                let _ = std::io::stdout().flush();
-            })
-            .await?;
-        println!();
-        history.push(("assistant".to_string(), reply));
     }
-
     Ok(())
+}
+
+async fn handle_key(
+    tx: &mpsc::UnboundedSender<Event>,
+    app: &mut App,
+    key: KeyEvent,
+) -> Result<bool> {
+    match key.code {
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(true),
+        KeyCode::Char('t') => app.think = app.think.next(),
+        KeyCode::Enter => {
+            let prompt = app.input.trim().to_string();
+            if app.streaming.is_none() && !prompt.is_empty() {
+                app.input.clear();
+                app.transcript.push((Role::User, prompt.clone()));
+                app.streaming = Some(String::new());
+                app.error = None;
+                start_chat(tx.clone(), app.ollama.clone(), &app.transcript, app.think);
+            }
+        }
+        KeyCode::Char(c) => app.input.push(c),
+        KeyCode::Backspace => {
+            app.input.pop();
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
+fn start_chat(
+    tx: mpsc::UnboundedSender<Event>,
+    ollama: Ollama,
+    transcript: &[(Role, String)],
+    think: Think,
+) {
+    let mut ollama = ollama;
+    ollama.set_think(think);
+    let history: Vec<(String, String)> = transcript
+        .iter()
+        .map(|(role, content)| (role.label().to_string(), content.clone()))
+        .collect();
+
+    tokio::spawn(async move {
+        let result = ollama
+            .chat(&history, |delta| {
+                let _ = tx.send(Event::Chunk(delta.to_string()));
+            })
+            .await;
+        let _ = tx.send(Event::Reply(result));
+    });
+}
+
+fn ui(frame: &mut Frame, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(3),
+            Constraint::Length(3),
+            Constraint::Length(1),
+        ])
+        .split(frame.area());
+
+    let transcript = Paragraph::new(app.render_transcript())
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" conversation "),
+        )
+        .wrap(Wrap { trim: false });
+    frame.render_widget(transcript, chunks[0]);
+
+    let input = Paragraph::new(app.input.as_str())
+        .block(Block::default().borders(Borders::ALL).title(" input "));
+    frame.render_widget(input, chunks[1]);
+    frame.set_cursor_position(ratatui::layout::Position::new(
+        chunks[1].x + 1 + app.input.chars().count() as u16,
+        chunks[1].y + 1,
+    ));
+
+    let status = Paragraph::new(Line::from(app.status_spans()));
+    frame.render_widget(status, chunks[2]);
 }

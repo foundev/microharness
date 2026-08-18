@@ -14,11 +14,71 @@ struct ChatMessage {
     content: String,
 }
 
+/// Reason-effort control passed to Ollama's `think` field.
+///
+/// Ollama accepts either a boolean (`think: true`/`false`) or a level string
+/// (`"low"`, `"medium"`, `"high"`, `"max"`). It serializes to that JSON value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Think {
+    Auto,
+    On,
+    Off,
+    Low,
+    Medium,
+    High,
+    Max,
+}
+
+impl Think {
+    pub fn as_json(self) -> serde_json::Value {
+        use Think::*;
+        match self {
+            Auto => serde_json::Value::Bool(true),
+            On => serde_json::Value::Bool(true),
+            Off => serde_json::Value::Bool(false),
+            Low => serde_json::Value::String("low".into()),
+            Medium => serde_json::Value::String("medium".into()),
+            High => serde_json::Value::String("high".into()),
+            Max => serde_json::Value::String("max".into()),
+        }
+    }
+
+    /// Human label for the status line.
+    pub fn label(self) -> &'static str {
+        use Think::*;
+        match self {
+            Auto => "auto",
+            On => "on",
+            Off => "off",
+            Low => "low",
+            Medium => "medium",
+            High => "high",
+            Max => "max",
+        }
+    }
+
+    /// Next level when the user cycles.
+    pub fn next(self) -> Self {
+        use Think::*;
+        match self {
+            Auto => On,
+            On => Off,
+            Off => Low,
+            Low => Medium,
+            Medium => High,
+            High => Max,
+            Max => Auto,
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct ChatRequest {
     model: String,
     messages: Vec<ChatMessage>,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    think: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -29,19 +89,30 @@ struct ChatChunk {
     error: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct Ollama {
     client: Client,
     base_url: String,
     model: String,
+    think: Think,
 }
 
 impl Ollama {
     pub fn new(base_url: &str, model: &str) -> Self {
+        Self::with_think(base_url, model, Think::Auto)
+    }
+
+    pub fn with_think(base_url: &str, model: &str, think: Think) -> Self {
         Self {
             client: Client::new(),
             base_url: base_url.trim_end_matches('/').to_string(),
             model: model.to_string(),
+            think,
         }
+    }
+
+    pub fn set_think(&mut self, think: Think) {
+        self.think = think;
     }
 
     /// Stream a single assistant reply for the given history.
@@ -64,6 +135,7 @@ impl Ollama {
                 })
                 .collect(),
             stream: true,
+            think: Some(self.think.as_json()),
         };
 
         let response = self

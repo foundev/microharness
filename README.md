@@ -1,15 +1,14 @@
 # microharness
 
-A deliberately minimal agentic harness for a local [Ollama] server.
+A deliberately minimal agentic TUI for a local [Ollama] server.
 
-It reads prompts from stdin, streams replies from a model over Ollama's native
-`/api/chat` endpoint, and keeps a multi-turn conversation going until EOF
-(Ctrl-D).
+A chat interface with a status line showing the current model and reason
+effort (`think`). Type a prompt and press Enter to send it; the reply streams
+into the conversation.
 
 - **MIT licensed.** Original code, permissively-licensed dependencies only.
 - **One endpoint.** `http://localhost:11434` (Ollama `serve`).
-- **No TUI library, no agent framework.** A streamed chat REPL. That's the
-  whole point.
+- **Small surface.** A streaming chat TUI and nothing more.
 
 ## Usage
 
@@ -17,17 +16,25 @@ Start Ollama locally, then run:
 
 ```bash
 ollama serve
-cargo run                          # defaults: localhost:11434, llama3.2
-cargo run --model qwen2.5
-cargo run --base-url http://127.0.0.1:11434 --model mixtral
+cargo run                           # defaults: localhost:11434, llama3.2
+cargo run -- --model qwen3
+cargo run -- --base-url http://127.0.0.1:11434
 ```
 
-Type a prompt and press Enter; the reply streams in place. Ctrl-D exits.
+In the TUI:
+
+- Type a prompt and press **Enter** to send it.
+- Press **T** to cycle the think level: `auto → on → off → low → medium → high → max`.
+- Press **Ctrl-C** to quit.
+
+The current model, server, and think level are shown in the status line at the
+bottom.
 
 ## Config
 
 - `--base-url` — Ollama server base URL (default `http://localhost:11434`).
-- `--model` — model name (default `llama3.2`; pick one you've pulled).
+- `--model` — model name (default `llama3.2`; pick one you've pulled, e.g.
+  `qwen3` for a reasoning model).
 
 ## Project conventions
 
@@ -41,6 +48,7 @@ Type a prompt and press Enter; the reply streams in place. Ctrl-D exits.
 ## Roadmap
 
 - [x] Streamed chat loop against Ollama `/api/chat`
+- [x] TUI with model/think status line, keyboard-driven
 - [ ] Conversation persistence / session resume
 - [ ] Selectable streaming (accumulate vs. redraw)
 
