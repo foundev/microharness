@@ -24,7 +24,7 @@ cargo run -- --base-url http://127.0.0.1:11434
 In the TUI:
 
 - Type a prompt and press **Enter** to send it.
-- Press **T** to cycle the think level: `auto → on → off → low → medium → high → max`.
+- Press **Ctrl-T** to cycle the think level: `auto → on → off → low → medium → high → max`.
 - Press **Ctrl-C** to quit.
 
 The current model, server, and think level are shown in the status line at the

@@ -93,7 +93,7 @@ impl App {
                 think,
                 Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
             ),
-            Span::raw("  [T] cycle think  [Enter] send  [Ctrl-C] quit"),
+            Span::raw("  [Ctrl-T] cycle think  [Enter] send  [Ctrl-C] quit"),
         ]
     }
 
@@ -199,7 +199,10 @@ async fn handle_key(
 ) -> Result<bool> {
     match key.code {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(true),
-        KeyCode::Char('t') => app.think = app.think.next(),
+        KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.think = app.think.next();
+            return Ok(false);
+        }
         KeyCode::Enter => {
             let prompt = app.input.trim().to_string();
             if app.streaming.is_none() && !prompt.is_empty() {
