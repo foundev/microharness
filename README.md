@@ -16,7 +16,7 @@ Start Ollama locally, then run:
 
 ```bash
 ollama serve
-cargo run                           # defaults: localhost:11434, llama3.2
+cargo run                           # localhost:11434, first installed model
 cargo run -- --model qwen3
 cargo run -- --base-url http://127.0.0.1:11434
 ```
@@ -36,8 +36,9 @@ bottom.
 ## Config
 
 - `--base-url` — Ollama server base URL (default `http://localhost:11434`).
-- `--model` — model name (default `llama3.2`; pick one you've pulled, e.g.
-  `qwen3` for a reasoning model).
+- `--model` — model name to start with. If omitted, the first model installed
+  on the server (from `/api/tags`) is used, so it never assumes a model you
+  don't have.
 
 ## Project conventions
 

@@ -111,6 +111,10 @@ impl Ollama {
         }
     }
 
+    pub fn set_model(&mut self, model: &str) {
+        self.model = model.to_string();
+    }
+
     pub fn set_think(&mut self, think: Think) {
         self.think = think;
     }

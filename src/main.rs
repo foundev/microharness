@@ -156,6 +156,7 @@ async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let mut base_url = DEFAULT_BASE_URL.to_string();
     let mut model = DEFAULT_MODEL.to_string();
+    let mut had_model = false;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -166,6 +167,7 @@ async fn main() -> Result<()> {
             "--model" => {
                 i += 1;
                 model = args.get(i).cloned().unwrap_or_default();
+                had_model = true;
             }
             other => return Err(anyhow::anyhow!("unknown argument: {other}")),
         }
@@ -173,6 +175,16 @@ async fn main() -> Result<()> {
     }
 
     let ollama = Ollama::new(&base_url, &model);
+    // Don't assume a default model the user may not have. If no `--model` was
+    // given, use the first model installed on the server.
+    if !had_model {
+        match ollama.list_models().await {
+            Ok(models) if !models.is_empty() => {
+                model = models[0].clone();
+            }
+            _ => {}
+        }
+    }
     let app = App::new(ollama, base_url, model);
     let mut terminal = ratatui::init();
     let res = run(&mut terminal, app).await;
@@ -282,7 +294,13 @@ async fn handle_key(
                     app.transcript.push((Role::User, prompt.clone()));
                     app.streaming = Some(String::new());
                     app.error = None;
-                    start_chat(tx.clone(), app.ollama.clone(), &app.transcript, app.think);
+                    start_chat(
+                        tx.clone(),
+                        app.ollama.clone(),
+                        app.model.clone(),
+                        &app.transcript,
+                        app.think,
+                    );
                 }
             }
         }
@@ -360,10 +378,12 @@ fn open_picker(tx: mpsc::UnboundedSender<Event>, ollama: Ollama) {
 fn start_chat(
     tx: mpsc::UnboundedSender<Event>,
     ollama: Ollama,
+    model: String,
     transcript: &[(Role, String)],
     think: Think,
 ) {
     let mut ollama = ollama;
+    ollama.set_model(&model);
     ollama.set_think(think);
     let history: Vec<(String, String)> = transcript
         .iter()
