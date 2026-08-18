@@ -37,6 +37,14 @@ impl Role {
             Role::Assistant => "assistant",
         }
     }
+
+    /// The role string Ollama expects on the wire.
+    fn wire(self) -> &'static str {
+        match self {
+            Role::User => "user",
+            Role::Assistant => "assistant",
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -387,7 +395,7 @@ fn start_chat(
     ollama.set_think(think);
     let history: Vec<(String, String)> = transcript
         .iter()
-        .map(|(role, content)| (role.label().to_string(), content.clone()))
+        .map(|(role, content)| (role.wire().to_string(), content.clone()))
         .collect();
 
     tokio::spawn(async move {
@@ -498,4 +506,17 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
             Constraint::Percentage((100 - percent_x) / 2),
         ])
         .split(vert[1])[1]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Role;
+
+    #[test]
+    fn wire_roles_match_ollama_contract() {
+        // Ollama rejects messages unless the first user message uses the
+        // literal "user" role. These must stay in sync with /api/chat.
+        assert_eq!(Role::User.wire(), "user");
+        assert_eq!(Role::Assistant.wire(), "assistant");
+    }
 }
