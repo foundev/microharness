@@ -59,6 +59,7 @@ struct App {
     /// Model picker state.
     picker_open: bool,
     models: Vec<String>,
+    picker_query: String,
     selected: usize,
 }
 
@@ -75,8 +76,21 @@ impl App {
             error: None,
             picker_open: false,
             models: Vec::new(),
+            picker_query: String::new(),
             selected: 0,
         }
+    }
+
+    fn filtered_models(&self) -> Vec<&str> {
+        if self.picker_query.is_empty() {
+            return self.models.iter().map(|m| m.as_str()).collect();
+        }
+        let q = self.picker_query.to_lowercase();
+        self.models
+            .iter()
+            .filter(|m| m.to_lowercase().contains(&q))
+            .map(|m| m.as_str())
+            .collect()
     }
 
     fn status_spans(&self) -> Vec<Span<'static>> {
@@ -220,20 +234,29 @@ async fn handle_key(
 ) -> Result<bool> {
     // Modal model picker.
     if app.picker_open {
+        let filtered = app.filtered_models();
         match key.code {
             KeyCode::Down => {
-                app.selected = (app.selected + 1).min(app.models.len().saturating_sub(1));
+                app.selected = (app.selected + 1).min(filtered.len().saturating_sub(1));
             }
             KeyCode::Up => {
                 app.selected = app.selected.saturating_sub(1);
             }
             KeyCode::Enter => {
-                if let Some(name) = app.models.get(app.selected) {
-                    app.model = name.clone();
+                if let Some(name) = filtered.get(app.selected) {
+                    app.model = (*name).to_string();
                 }
                 app.picker_open = false;
             }
             KeyCode::Esc => app.picker_open = false,
+            KeyCode::Backspace => {
+                app.picker_query.pop();
+                app.selected = 0;
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                app.picker_query.push(c);
+                app.selected = 0;
+            }
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 return Ok(true);
             }
@@ -247,6 +270,7 @@ async fn handle_key(
         KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.picker_open = true;
             app.models.clear();
+            app.picker_query.clear();
             app.selected = 0;
             app.error = None;
             open_picker(tx.clone(), app.ollama.clone());
@@ -349,8 +373,21 @@ fn ui(frame: &mut Frame, app: &App) {
                 .block(Block::default().borders(Borders::ALL).title(" models "));
             frame.render_widget(loading, area);
         } else {
-            let items: Vec<ListItem> = app
-                .models
+            let filtered = app.filtered_models();
+            let inner = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(3), Constraint::Min(1)])
+                .split(area);
+
+            let query = Paragraph::new(app.picker_query.as_str())
+                .block(Block::default().borders(Borders::ALL).title(" search "));
+            frame.render_widget(query, inner[0]);
+            frame.set_cursor_position(ratatui::layout::Position::new(
+                inner[0].x + 1 + app.picker_query.chars().count() as u16,
+                inner[0].y + 1,
+            ));
+
+            let items: Vec<ListItem> = filtered
                 .iter()
                 .enumerate()
                 .map(|(idx, name)| {
@@ -359,7 +396,7 @@ fn ui(frame: &mut Frame, app: &App) {
                     } else {
                         Style::default()
                     };
-                    ListItem::new(name.clone()).style(style)
+                    ListItem::new((*name).to_string()).style(style)
                 })
                 .collect();
             let mut state = ListState::default();
@@ -368,11 +405,11 @@ fn ui(frame: &mut Frame, app: &App) {
                 .block(
                     Block::default()
                         .borders(Borders::ALL)
-                        .title(" models  [↑/↓] select  [Enter] use  [Esc] close "),
+                        .title(" models  [type] filter  [↑/↓] select  [Enter] use  [Esc] close "),
                 )
                 .highlight_style(Style::default().bg(Color::DarkGray))
                 .highlight_symbol("> ");
-            frame.render_stateful_widget(list, area, &mut state);
+            frame.render_stateful_widget(list, inner[1], &mut state);
         }
     }
 }
