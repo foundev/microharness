@@ -1,54 +1,47 @@
 # microharness
 
-A deliberately minimal agentic TUI. Think the leanest possible terminal agent
-harness — single-purpose, no frameworks, no multi-provider routing. At first it
-supports exactly one endpoint: an **`ollama serve`** instance.
+A deliberately minimal agentic harness for a local [Ollama] server.
 
-> **What: early stage.** This repository is being initialized. The scaffold
-> (Rust/Cargo), license (MIT), CI, and release-tagging are in place; the TUI
-> itself is next.
+It reads prompts from stdin, streams replies from a model over Ollama's native
+`/api/chat` endpoint, and keeps a multi-turn conversation going until EOF
+(Ctrl-D).
 
-## What it is
+- **MIT licensed.** Original code, permissively-licensed dependencies only.
+- **One endpoint.** `http://localhost:11434` (Ollama `serve`).
+- **No TUI library, no agent framework.** A streamed chat REPL. That's the
+  whole point.
 
-- A **Rust TUI** (`Cargo`-based, 2024 edition).
-- A **client for one Ollama server endpoint** — `POST http://localhost:11434/api/chat`.
+## Usage
 
-## What it is not
+Start Ollama locally, then run:
 
-- Not an agent framework.
-- Not multi-provider / multi-endpoint yet.
-- Not an "experience" layer — no plugins, no voice, no tools beyond the chat
-  round-trip.
+```bash
+ollama serve
+cargo run                          # defaults: localhost:11434, llama3.2
+cargo run --model qwen2.5
+cargo run --base-url http://127.0.0.1:11434 --model mixtral
+```
 
-## Current scope (v0.1.x)
+Type a prompt and press Enter; the reply streams in place. Ctrl-D exits.
 
-- Project init: `LICENSE` (MIT), this `README`, GitHub Actions CI, and a
-  release workflow are in place.
-- The program is a placeholder (`main.rs` prints and exits).
+## Config
 
-## Roadmap
-
-- [ ] Minimal chat loop — prompt in, rendered reply, exit.
-- [ ] Streamed reply — consume Ollama SSE and redraw in place.
-- [ ] Configurable `base_url` (default `http://localhost:11434`).
-
----
+- `--base-url` — Ollama server base URL (default `http://localhost:11434`).
+- `--model` — model name (default `llama3.2`; pick one you've pulled).
 
 ## Project conventions
 
-- **CI:** GitHub Actions runs build, lint, and tests on every PR and branch
-  push to `master`. See `.github/workflows/ci.yml`.
-- **Releases:** cut a `vX.Y.Z` tag to trigger the release workflow and publish
-  a GitHub Release. See `.github/workflows/release.yml`.
-- **License:** MIT. See `LICENSE`.
-- **PRs:** always target `origin`'s default branch (`master`).
+- **License:** MIT (`LICENSE`).
+- **CI:** GitHub Actions runs `cargo fmt --check`, `cargo clippy`, build, and
+  tests on every PR and push to `master` (`.github/workflows/ci.yml`).
+- **Releases:** cut a `vX.Y.Z` tag to trigger release packaging + a GitHub
+  Release (`.github/workflows/release.yml`).
+- **PRs:** target `origin/master`, the default branch.
 
-## Usage (once the TUI exists)
+## Roadmap
 
-```bash
-# start Ollama locally
-ollama serve
+- [x] Streamed chat loop against Ollama `/api/chat`
+- [ ] Conversation persistence / session resume
+- [ ] Selectable streaming (accumulate vs. redraw)
 
-# run the TUI
-cargo run
-```
+[Ollama]: https://github.com/ollama/ollama
