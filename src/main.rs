@@ -2,8 +2,9 @@
 //!
 //! A chat interface with a status line showing the current model and think
 //! level. Type a prompt and press Enter to send; the reply streams into the
-//! transcript. `Ctrl-M` opens the model picker, `Ctrl-T` cycles the think level
-//! (auto → on → off → low → medium → high → max), Ctrl-C quits.
+//! transcript. `/models` opens the model picker, `/think <level>` sets the
+//! think level (auto/on/off/low/medium/high/max), and `Ctrl-T` cycles it.
+//! Ctrl-C quits.
 
 mod ollama;
 
@@ -116,7 +117,7 @@ impl App {
                 think,
                 Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
             ),
-            Span::raw("  [Ctrl-M] models  [Ctrl-T] think  [Enter] send  [Ctrl-C] quit"),
+            Span::raw("  /models  [Ctrl-T] think  [Enter] send  [Ctrl-C] quit"),
         ]
     }
 
@@ -267,14 +268,6 @@ async fn handle_key(
 
     match key.code {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(true),
-        KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.picker_open = true;
-            app.models.clear();
-            app.picker_query.clear();
-            app.selected = 0;
-            app.error = None;
-            open_picker(tx.clone(), app.ollama.clone());
-        }
         KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.think = app.think.next();
             return Ok(false);
@@ -283,10 +276,14 @@ async fn handle_key(
             let prompt = app.input.trim().to_string();
             if app.streaming.is_none() && !prompt.is_empty() {
                 app.input.clear();
-                app.transcript.push((Role::User, prompt.clone()));
-                app.streaming = Some(String::new());
-                app.error = None;
-                start_chat(tx.clone(), app.ollama.clone(), &app.transcript, app.think);
+                if let Some(cmd) = prompt.strip_prefix('/') {
+                    handle_command(tx, app, cmd);
+                } else {
+                    app.transcript.push((Role::User, prompt.clone()));
+                    app.streaming = Some(String::new());
+                    app.error = None;
+                    start_chat(tx.clone(), app.ollama.clone(), &app.transcript, app.think);
+                }
             }
         }
         KeyCode::Char(c) => app.input.push(c),
@@ -296,6 +293,55 @@ async fn handle_key(
         _ => {}
     }
     Ok(false)
+}
+
+/// Handle a `/command` typed in the input. Called with the command name and
+/// any trailing arguments (already stripped of the leading `/`).
+fn handle_command(tx: &mpsc::UnboundedSender<Event>, app: &mut App, raw: &str) {
+    let cmd = raw.split_whitespace().next().unwrap_or("");
+    match cmd {
+        "models" => {
+            app.picker_open = true;
+            app.models.clear();
+            app.picker_query.clear();
+            app.selected = 0;
+            app.error = None;
+            open_picker(tx.clone(), app.ollama.clone());
+        }
+        "think" => {
+            let level = raw.split_whitespace().nth(1);
+            match level.and_then(parse_think) {
+                Some(think) => app.think = think,
+                None => {
+                    app.error = Some(
+                        "usage: /think auto|on|off|low|medium|high|max (or press Ctrl-T to cycle)"
+                            .to_string(),
+                    )
+                }
+            }
+        }
+        "help" => {
+            app.error = Some(
+                "commands: /models · /think auto|on|off|low|medium|high|max · /help".to_string(),
+            );
+        }
+        other => {
+            app.error = Some(format!("unknown command: /{other} (try /help)"));
+        }
+    }
+}
+
+fn parse_think(s: &str) -> Option<Think> {
+    match s.to_ascii_lowercase().as_str() {
+        "auto" => Some(Think::Auto),
+        "on" => Some(Think::On),
+        "off" => Some(Think::Off),
+        "low" => Some(Think::Low),
+        "medium" => Some(Think::Medium),
+        "high" => Some(Think::High),
+        "max" => Some(Think::Max),
+        _ => None,
+    }
 }
 
 fn open_picker(tx: mpsc::UnboundedSender<Event>, ollama: Ollama) {

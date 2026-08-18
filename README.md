@@ -24,9 +24,11 @@ cargo run -- --base-url http://127.0.0.1:11434
 In the TUI:
 
 - Type a prompt and press **Enter** to send it.
-- Press **Ctrl-M** to open the model picker (lists models via `/api/tags`; type to filter, `↑/↓` navigate, `Enter` select, `Esc` close).
-- Press **Ctrl-T** to cycle the think level: `auto → on → off → low → medium → high → max`.
-- Press **Ctrl-C** to quit.
+- Type `/models` to open the model picker (lists models via `/api/tags`; type to
+  filter, `↑/↓` navigate, `Enter` select, `Esc` close).
+- Type `/think low|medium|high|max` to set the think level, or press **Ctrl-T**
+  to cycle it.
+- Type `/help` for the command list, or press **Ctrl-C** to quit.
 
 The current model, server, and think level are shown in the status line at the
 bottom.
