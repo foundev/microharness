@@ -200,6 +200,36 @@ impl Ollama {
 
         Ok(full)
     }
+
+    /// List the model names available on the server (`GET /api/tags`).
+    pub async fn list_models(&self) -> Result<Vec<String>> {
+        let response = self
+            .client
+            .get(format!("{}/api/tags", self.base_url))
+            .send()
+            .await
+            .context("failed to list models")?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(anyhow!("ollama returned {status}: {body}"));
+        }
+
+        #[derive(serde::Deserialize)]
+        struct Tags {
+            models: Vec<Model>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Model {
+            name: String,
+        }
+
+        let tags: Tags = response.json().await.context("bad /api/tags response")?;
+        let mut names: Vec<String> = tags.models.into_iter().map(|m| m.name).collect();
+        names.sort();
+        Ok(names)
+    }
 }
 
 /// Drain every `\n`-terminated record from `buffer`, leaving any partial

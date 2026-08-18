@@ -2,8 +2,8 @@
 //!
 //! A chat interface with a status line showing the current model and think
 //! level. Type a prompt and press Enter to send; the reply streams into the
-//! transcript. `T` cycles the think level (auto → on → off → low → medium →
-//! high → max), Ctrl-C quits.
+//! transcript. `Ctrl-M` opens the model picker, `Ctrl-T` cycles the think level
+//! (auto → on → off → low → medium → high → max), Ctrl-C quits.
 
 mod ollama;
 
@@ -13,10 +13,10 @@ use futures_util::StreamExt;
 use ollama::{Ollama, Think};
 use ratatui::{
     DefaultTerminal, Frame,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
 use tokio::sync::mpsc;
 
@@ -42,6 +42,8 @@ impl Role {
 enum Event {
     Chunk(String),
     Reply(Result<String>),
+    Models(Vec<String>),
+    ModelsError(anyhow::Error),
 }
 
 struct App {
@@ -51,9 +53,13 @@ struct App {
     think: Think,
     input: String,
     transcript: Vec<(Role, String)>,
-    /// Partial reply currently streaming ("" while streaming, None when idle).
+    /// Partial reply currently streaming (Some while streaming, None when idle).
     streaming: Option<String>,
     error: Option<String>,
+    /// Model picker state.
+    picker_open: bool,
+    models: Vec<String>,
+    selected: usize,
 }
 
 impl App {
@@ -67,6 +73,9 @@ impl App {
             transcript: Vec::new(),
             streaming: None,
             error: None,
+            picker_open: false,
+            models: Vec::new(),
+            selected: 0,
         }
     }
 
@@ -93,7 +102,7 @@ impl App {
                 think,
                 Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
             ),
-            Span::raw("  [Ctrl-T] cycle think  [Enter] send  [Ctrl-C] quit"),
+            Span::raw("  [Ctrl-M] models  [Ctrl-T] think  [Enter] send  [Ctrl-C] quit"),
         ]
     }
 
@@ -186,6 +195,18 @@ async fn run(terminal: &mut DefaultTerminal, mut app: App) -> Result<()> {
                     app.streaming = None;
                     app.error = Some(format!("error: {e:#}"));
                 }
+                Event::Models(models) => {
+                    if !models.is_empty() {
+                        app.models = models;
+                        if app.selected >= app.models.len() {
+                            app.selected = 0;
+                        }
+                    }
+                }
+                Event::ModelsError(e) => {
+                    app.picker_open = false;
+                    app.error = Some(format!("failed to list models: {e:#}"));
+                }
             },
         }
     }
@@ -197,8 +218,39 @@ async fn handle_key(
     app: &mut App,
     key: KeyEvent,
 ) -> Result<bool> {
+    // Modal model picker.
+    if app.picker_open {
+        match key.code {
+            KeyCode::Down => {
+                app.selected = (app.selected + 1).min(app.models.len().saturating_sub(1));
+            }
+            KeyCode::Up => {
+                app.selected = app.selected.saturating_sub(1);
+            }
+            KeyCode::Enter => {
+                if let Some(name) = app.models.get(app.selected) {
+                    app.model = name.clone();
+                }
+                app.picker_open = false;
+            }
+            KeyCode::Esc => app.picker_open = false,
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                return Ok(true);
+            }
+            _ => {}
+        }
+        return Ok(false);
+    }
+
     match key.code {
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return Ok(true),
+        KeyCode::Char('m') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.picker_open = true;
+            app.models.clear();
+            app.selected = 0;
+            app.error = None;
+            open_picker(tx.clone(), app.ollama.clone());
+        }
         KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.think = app.think.next();
             return Ok(false);
@@ -220,6 +272,19 @@ async fn handle_key(
         _ => {}
     }
     Ok(false)
+}
+
+fn open_picker(tx: mpsc::UnboundedSender<Event>, ollama: Ollama) {
+    tokio::spawn(async move {
+        match ollama.list_models().await {
+            Ok(models) => {
+                let _ = tx.send(Event::Models(models));
+            }
+            Err(e) => {
+                let _ = tx.send(Event::ModelsError(e));
+            }
+        }
+    });
 }
 
 fn start_chat(
@@ -274,4 +339,60 @@ fn ui(frame: &mut Frame, app: &App) {
 
     let status = Paragraph::new(Line::from(app.status_spans()));
     frame.render_widget(status, chunks[2]);
+
+    if app.picker_open {
+        let area = centered_rect(60, 60, frame.area());
+        frame.render_widget(Clear, area);
+
+        if app.models.is_empty() {
+            let loading = Paragraph::new("Loading models…")
+                .block(Block::default().borders(Borders::ALL).title(" models "));
+            frame.render_widget(loading, area);
+        } else {
+            let items: Vec<ListItem> = app
+                .models
+                .iter()
+                .enumerate()
+                .map(|(idx, name)| {
+                    let style = if idx == app.selected {
+                        Style::default().add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    };
+                    ListItem::new(name.clone()).style(style)
+                })
+                .collect();
+            let mut state = ListState::default();
+            state.select(Some(app.selected));
+            let list = List::new(items)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" models  [↑/↓] select  [Enter] use  [Esc] close "),
+                )
+                .highlight_style(Style::default().bg(Color::DarkGray))
+                .highlight_symbol("> ");
+            frame.render_stateful_widget(list, area, &mut state);
+        }
+    }
+}
+
+/// A rectangle centered within `r`, covering `percent_x` × `percent_y` of it.
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let vert = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(vert[1])[1]
 }
