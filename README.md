@@ -1,54 +1,59 @@
 # microharness
 
-A deliberately minimal agentic TUI. Think the leanest possible terminal agent
-harness — single-purpose, no frameworks, no multi-provider routing. At first it
-supports exactly one endpoint: an **`ollama serve`** instance.
+A deliberately minimal agentic TUI for a local [Ollama] server.
 
-> **What: early stage.** This repository is being initialized. The scaffold
-> (Rust/Cargo), license (MIT), CI, and release-tagging are in place; the TUI
-> itself is next.
+A chat interface with a status line showing the current model and reason
+effort (`think`). Type a prompt and press Enter to send it; the reply streams
+into the conversation.
 
-## What it is
+- **MIT licensed.** Original code, permissively-licensed dependencies only.
+- **One endpoint.** `http://localhost:11434` (Ollama `serve`).
+- **Small surface.** A streaming chat TUI and nothing more.
 
-- A **Rust TUI** (`Cargo`-based, 2024 edition).
-- A **client for one Ollama server endpoint** — `POST http://localhost:11434/api/chat`.
+## Usage
 
-## What it is not
+Start Ollama locally, then run:
 
-- Not an agent framework.
-- Not multi-provider / multi-endpoint yet.
-- Not an "experience" layer — no plugins, no voice, no tools beyond the chat
-  round-trip.
+```bash
+ollama serve
+cargo run                           # localhost:11434, first installed model
+cargo run -- --model qwen3
+cargo run -- --base-url http://127.0.0.1:11434
+```
 
-## Current scope (v0.1.x)
+In the TUI:
 
-- Project init: `LICENSE` (MIT), this `README`, GitHub Actions CI, and a
-  release workflow are in place.
-- The program is a placeholder (`main.rs` prints and exits).
+- Type a prompt and press **Enter** to send it.
+- Type `/models` to open the model picker (lists models via `/api/tags`; type to
+  filter, `↑/↓` navigate, `Enter` select, `Esc` close).
+- Type `/think low|medium|high|max` to set the think level, or press **Ctrl-T**
+  to cycle it.
+- Type `/help` for the command list, or press **Ctrl-C** to quit.
 
-## Roadmap
+The current model, server, and think level are shown in the status line at the
+bottom.
 
-- [ ] Minimal chat loop — prompt in, rendered reply, exit.
-- [ ] Streamed reply — consume Ollama SSE and redraw in place.
-- [ ] Configurable `base_url` (default `http://localhost:11434`).
+## Config
 
----
+- `--base-url` — Ollama server base URL (default `http://localhost:11434`).
+- `--model` — model name to start with. If omitted, the first model installed
+  on the server (from `/api/tags`) is used, so it never assumes a model you
+  don't have.
 
 ## Project conventions
 
-- **CI:** GitHub Actions runs build, lint, and tests on every PR and branch
-  push to `master`. See `.github/workflows/ci.yml`.
-- **Releases:** cut a `vX.Y.Z` tag to trigger the release workflow and publish
-  a GitHub Release. See `.github/workflows/release.yml`.
-- **License:** MIT. See `LICENSE`.
-- **PRs:** always target `origin`'s default branch (`master`).
+- **License:** MIT (`LICENSE`).
+- **CI:** GitHub Actions runs `cargo fmt --check`, `cargo clippy`, build, and
+  tests on every PR and push to `master` (`.github/workflows/ci.yml`).
+- **Releases:** cut a `vX.Y.Z` tag to trigger release packaging + a GitHub
+  Release (`.github/workflows/release.yml`).
+- **PRs:** target `origin/master`, the default branch.
 
-## Usage (once the TUI exists)
+## Roadmap
 
-```bash
-# start Ollama locally
-ollama serve
+- [x] Streamed chat loop against Ollama `/api/chat`
+- [x] TUI with model/think status line, keyboard-driven
+- [ ] Conversation persistence / session resume
+- [ ] Selectable streaming (accumulate vs. redraw)
 
-# run the TUI
-cargo run
-```
+[Ollama]: https://github.com/ollama/ollama
